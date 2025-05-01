@@ -1,6 +1,6 @@
 
 """
-Code adapted from https://github.com/barnrang/Prototypical-network-keras-reimplementation
+Adopted from: https://github.com/EftyK/FSL_for_urban_damage/blob/main/protonet/data_generator.py
 """
 
 
