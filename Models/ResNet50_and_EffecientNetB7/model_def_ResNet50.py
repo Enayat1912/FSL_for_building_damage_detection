@@ -1,5 +1,6 @@
-
-
+"""
+Adoptted from https://github.com/DIUx-xView/xView2_baseline/model/model.py
+"""
 
 """
 resnet50_model.py
