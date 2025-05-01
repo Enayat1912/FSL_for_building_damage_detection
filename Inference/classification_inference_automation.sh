@@ -1,103 +1,111 @@
 #!/bin/bash
 set -euo pipefail
 
-# This function is called when Ctrl-C or Error occurs
-function trap_ctrlc () {
-    echo "Ctrl-C or Error caught...performing cleanup, check /tmp/inference.log"
+# Function to clean up on Ctrl+C or error
+trap_ctrlc() {
+    echo "Error or interrupt caught. Cleaning up. See log at $LOGFILE"
 
-    if [ -d /tmp/inference ]; then
-        rm -rf /tmp/inference
+    if [ -d "$inference_base" ]; then
+        rm -rf "$inference_base"
     fi
 
     exit 99
 }
 
-trap "trap_ctrlc" 2 9 13 3
+trap trap_ctrlc INT TERM ERR
 
+# Help message
 help_message() {
-    printf "${0}: Automates the workflow for localization and classification inference\n"
-    printf "\t-i: Full path to input pre-disaster image\n"
-    printf "\t-p: Full path to input post-disaster image\n"
-    printf "\t-l: Path to localization JSON (polygons)\n"
-    printf "\t-c: Path to classification model weights\n"
-    printf "\t-o: Path to save final output image\n"
-    printf "\t-e: Path to virtual environment activate script (optional)\n"
-    printf "\n"
+    echo "Usage: $0 -i <pre_image> -p <post_image> -l <localization_json> -c <model_weights> -o <output_file> [-e <venv_activate_script>]"
+    echo ""
+    echo "Arguments:"
+    echo "  -i    Path to pre-disaster image (not used in this version but kept for compatibility)"
+    echo "  -p    Path to post-disaster image"
+    echo "  -l    Path to localization JSON (polygon annotations)"
+    echo "  -c    Path to classification model weights"
+    echo "  -o    Path to save final output image"
+    echo "  -e    Path to activate virtual environment (optional)"
+    echo "  -h    Display help"
+    echo ""
 }
 
-# Variables
+# Default variables
 input=""
 input_post=""
 localization_json=""
 classification_weights=""
 output_file=""
 virtual_env=""
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 inference_base="/tmp/inference"
-LOGFILE="/tmp/inference_log"
+LOGFILE="/tmp/inference.log"
 
-# Parse command-line arguments
-while getopts "i:p:o:l:c:e:h" OPTION
-do
+# Parse arguments
+while getopts "i:p:o:l:c:e:h" OPTION; do
     case $OPTION in
-        h) help_message; exit 0;;
-        i) input="$OPTARG";;
-        p) input_post="$OPTARG";;
-        o) output_file="$OPTARG";;
-        l) localization_json="$OPTARG";;
-        c) classification_weights="$OPTARG";;
-        e) virtual_env="$OPTARG";;
-        ?) help_message; exit 1;;
+        h) help_message; exit 0 ;;
+        i) input="$OPTARG" ;;  # Unused
+        p) input_post="$OPTARG" ;;
+        o) output_file="$OPTARG" ;;
+        l) localization_json="$OPTARG" ;;
+        c) classification_weights="$OPTARG" ;;
+        e) virtual_env="$OPTARG" ;;
+        ?) help_message; exit 1 ;;
     esac
 done
 
-# Check required arguments
-if [ -z "$input" ] || [ -z "$input_post" ] || [ -z "$localization_json" ] || [ -z "$classification_weights" ] || [ -z "$output_file" ]; then
+# Validate required arguments
+if [[ -z "$input_post" || -z "$localization_json" || -z "$classification_weights" || -z "$output_file" ]]; then
     help_message
     exit 1
 fi
 
-# Create output directories
+# Prepare working environment
 mkdir -p "$inference_base"
 touch "$LOGFILE"
 
-# Activate virtual environment if provided
-if [ -f "$virtual_env" ]; then
+# Optional virtual environment activation
+if [[ -n "$virtual_env" && -f "$virtual_env" ]]; then
+    echo "Activating virtual environment from $virtual_env"
     source "$virtual_env"
 else
-    echo "No virtual environment provided. Ensure dependencies are installed globally."
+    echo "No virtual environment provided. Using system Python environment."
 fi
 
-# Process localization (extract polygons)
-echo "Running localization..."
-python3 ./process_data_inference.py \
+# Step 1: Localization
+echo "[1/4] Extracting polygons from label file..."
+python3 "$SCRIPT_DIR/process_data_inference.py" \
     --input_img "$input_post" \
     --label_path "$localization_json" \
     --output_dir "$inference_base/output_polygons" \
     --output_csv "$inference_base/output.csv" >> "$LOGFILE" 2>&1
 
-# Perform classification on extracted polygons
-echo "Running classification..."
-python3 ./inference_proto.py \
+# Step 2: Classification
+echo "[2/4] Running classification model..."
+python3 "$SCRIPT_DIR/inference_proto.py" \
     --test_data "$inference_base/output_polygons" \
     --test_csv "$inference_base/output.csv" \
     --model_weights "$classification_weights" \
     --output_json "$inference_base/classification_inference.json" >> "$LOGFILE" 2>&1
 
-# Combine localization and classification results
-echo "Combining results..."
-python3 ./combine_jsons.py \
+# Step 3: Merge classification and geometry
+echo "[3/4] Combining classification with geometry..."
+python3 "$SCRIPT_DIR/combine_jsons.py" \
     --polys "$localization_json" \
     --classes "$inference_base/classification_inference.json" \
     --output "$inference_base/inference.json" >> "$LOGFILE" 2>&1
 
-# Generate the final inference image
-echo "Creating final output image..."
-python3 ./inference_image_output.py \
+# Step 4: Generate inference image
+echo "[4/4] Generating output image..."
+python3 "$SCRIPT_DIR/inference_image_output.py" \
     --input "$inference_base/inference.json" \
     --output "$output_file" >> "$LOGFILE" 2>&1
 
-# Cleanup temporary files
+# Cleanup
 echo "Cleaning up temporary files..."
 rm -rf "$inference_base"
 
-echo "Workflow completed. Output saved to: $output_file"
+echo "Inference workflow completed successfully."
+echo "Output image saved to: $output_file"
+echo "Log saved to: $LOGFILE"
+
