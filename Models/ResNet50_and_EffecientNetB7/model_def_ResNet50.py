@@ -1,5 +1,5 @@
 """
-Adoptted from https://github.com/DIUx-xView/xView2_baseline/model/model.py
+Adpted from https://github.com/DIUx-xView/xView2_baseline/blob/master/model/model.py
 """
 
 """
