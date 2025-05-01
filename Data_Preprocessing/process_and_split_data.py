@@ -1,5 +1,5 @@
 """
-Code adapted from :https://github.com/EftyK/FSL_for_urban_damage.git
+Code adapted from https://github.com/DIUx-xView/xView2_baseline/blob/master/model/process_data.py
 
 xview2-baseline Copyright 2019 Carnegie Mellon University. BSD-3
 
