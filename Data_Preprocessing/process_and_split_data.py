@@ -25,7 +25,7 @@ Please see Copyright notice for non-US Government use and distribution.
 
 
 """
-process_xbd_dataset.py
+process_xbd_dataset
 
 Extracts building-level image crops from the xBD (xView2) dataset using polygon annotations.
 Saves cropped building images and generates label CSVs. Optionally splits into train/val/test sets.
