@@ -33,7 +33,7 @@ Accuracy: ~63% on 4-class damage classification
 
 Insight: ProtoNets performed best at detecting Destroyed buildings
 
-Limitations: Class imbalance and limited data size remain significant challenges
+
 
 ## Data and Sources 
 Data Source: [https://xview2.org/](https://xview2.org/)
