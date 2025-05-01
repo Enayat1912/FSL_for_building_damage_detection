@@ -1,5 +1,5 @@
 """
-Code adapted from https://github.com/DIUx-xView/xView2_baseline/blob/master/model/process_data.py
+Code adapted from :https://github.com/EftyK/FSL_for_urban_damage.git
 
 xview2-baseline Copyright 2019 Carnegie Mellon University. BSD-3
 
@@ -18,170 +18,181 @@ OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
 [DISTRIBUTION STATEMENT A] This material has been approved for public release and unlimited distribution. 
 Please see Copyright notice for non-US Government use and distribution.
 """
-from PIL import Image
-import time
+
+
+
+
+
+
+"""
+process_xbd_dataset.py
+
+Extracts building-level image crops from the xBD (xView2) dataset using polygon annotations.
+Saves cropped building images and generates label CSVs. Optionally splits into train/val/test sets.
+
+"""
+
+import os
+import cv2
+import json
+import math
+import logging
+import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-import os
-import math
-import random
-import argparse
-import logging
-import json
-import cv2
-import datetime
-
-import shapely.wkt
-import shapely
+from PIL import Image
+from shapely import wkt
 from shapely.geometry import Polygon
-from collections import defaultdict
 from sklearn.model_selection import train_test_split
+from collections import defaultdict
+
 logging.basicConfig(level=logging.INFO)
 
-# Configurations
-UNDERSAMPLE_THRESHOLD = 0
-VALIDATION_SPLIT = 0
-TEST_SPLIT = 0
-
-damage_intensity_encoding = defaultdict(lambda: 0)
-damage_intensity_encoding['destroyed'] = 3
-damage_intensity_encoding['major-damage'] = 2
-damage_intensity_encoding['minor-damage'] = 1
-damage_intensity_encoding['no-damage'] = 0
+# Default label encoding
+damage_intensity_encoding = defaultdict(lambda: 0, {
+    'destroyed': 3,
+    'major-damage': 2,
+    'minor-damage': 1,
+    'no-damage': 0
+})
 
 
-def save_labeled_data(x, y, csv_path):
-    data_array = {'uuid': x, 'labels': y}
-    df = pd.DataFrame(data = data_array)
-    df.to_csv(csv_path)
+def save_labeled_data(filenames, labels, csv_path):
+    """Save UUID-label pairs to CSV."""
+    df = pd.DataFrame({'uuid': filenames, 'labels': labels})
+    df.to_csv(csv_path, index=False)
+    logging.info(f"Saved label CSV: {csv_path}")
 
-def process_img(img_array, polygon_pts, scale_pct):
-    """Process Raw Data into
 
-            Args:
-                img_array (numpy array): numpy representation of image.
-                polygon_pts (array): corners of the building polygon.
-
-            Returns:
-                numpy array: .
-
-    """
-
+def process_img(img_array, polygon_pts, scale_pct=0.8):
+    """Crop and return an image patch around the building polygon."""
     height, width, _ = img_array.shape
-
-    xcoords = polygon_pts[:, 0]
-    ycoords = polygon_pts[:, 1]
+    xcoords, ycoords = polygon_pts[:, 0], polygon_pts[:, 1]
     xmin, xmax = np.min(xcoords), np.max(xcoords)
     ymin, ymax = np.min(ycoords), np.max(ycoords)
 
-    xdiff = xmax - xmin
-    ydiff = ymax - ymin
-
-    #Extend image by scale percentage
-    xmin = max(int(xmin - (xdiff * scale_pct)), 0)
-    xmax = min(int(xmax + (xdiff * scale_pct)), width)
-    ymin = max(int(ymin - (ydiff * scale_pct)), 0)
-    ymax = min(int(ymax + (ydiff * scale_pct)), height)
+    xdiff, ydiff = xmax - xmin, ymax - ymin
+    xmin = max(int(xmin - xdiff * scale_pct), 0)
+    xmax = min(int(xmax + xdiff * scale_pct), width)
+    ymin = max(int(ymin - ydiff * scale_pct), 0)
+    ymax = min(int(ymax + ydiff * scale_pct), height)
 
     return img_array[ymin:ymax, xmin:xmax, :]
 
 
-def process_data(input_path, output_path, output_csv_path):
-    """Process Raw Data into
+def process_data(input_path, output_img_dir, output_csv_dir,
+                 undersample_threshold=0, val_split=0.0, test_split=0.0):
+    """Main processing function for xBD image and label extraction."""
+    os.makedirs(output_img_dir, exist_ok=True)
+    os.makedirs(output_csv_dir, exist_ok=True)
 
-        Args:
-            dir_path (path): Path to the xBD dataset.
-            data_type (string): String to indicate whether to process
-                                train, test, or holdout data.
+    x_data, y_data = [], []
 
-        Returns:
-            x_data: A list of numpy arrays representing the images for training
-            y_data: A list of labels for damage represented in matrix form
-
-    """
-    x_data = []
-    y_data = []
-
-    disasters = [folder for folder in os.listdir(input_path) if not folder.startswith('.')]
-    disaster_paths = ([input_path + "/" +  d + "/images" for d in disasters])
+    # Get all image paths
+    disasters = [d for d in os.listdir(input_path) if not d.startswith('.')]
     image_paths = []
-    image_paths.extend([(disaster_path + "/" + pic) for pic in os.listdir(disaster_path)] for disaster_path in disaster_paths)
-    img_paths = np.concatenate(image_paths)
+    for disaster in disasters:
+        image_dir = os.path.join(input_path, disaster, "images")
+        if not os.path.exists(image_dir): continue
+        for img in os.listdir(image_dir):
+            if img.endswith(".png"):
+                image_paths.append(os.path.join(image_dir, img))
 
-    for img_path in tqdm(img_paths):
+    logging.info(f"Found {len(image_paths)} total post-disaster images.")
 
-        img_obj = Image.open(img_path)
-        img_array = np.array(img_obj)
+    for img_path in tqdm(image_paths, desc="Processing Images"):
+        try:
+            img = Image.open(img_path).convert("RGB")
+            img_array = np.array(img)
 
-        #Get corresponding label for the current image
-        label_path = img_path.replace('png', 'json').replace('images', 'labels')
-        label_file = open(label_path)
-        label_data = json.load(label_file)
-
-        for feat in label_data['features']['xy']:
-
-            # only images post-disaster will have damage type
-            try:
-                damage_type = feat['properties']['subtype']
-            except: # pre-disaster damage is default no-damage
-                damage_type = "no-damage"
+            label_path = img_path.replace("images", "labels").replace(".png", ".json")
+            if not os.path.exists(label_path):
                 continue
 
-            poly_uuid = feat['properties']['uid'] + ".png"
+            with open(label_path, "r") as f:
+                label_data = json.load(f)
 
-            if (UNDERSAMPLE_THRESHOLD == 0 or y_data.count(damage_intensity_encoding[damage_type]) < UNDERSAMPLE_THRESHOLD):
-                y_data.append(damage_intensity_encoding[damage_type])
+            for feat in label_data['features']['xy']:
+                uid = feat['properties']['uid']
+                try:
+                    damage_type = feat['properties'].get('subtype', 'no-damage')
+                    damage_label = damage_intensity_encoding[damage_type]
+                except Exception:
+                    continue
 
-                polygon_geom = shapely.wkt.loads(feat['wkt'])
-                polygon_pts = np.array(list(polygon_geom.exterior.coords))
-                poly_img = process_img(img_array, polygon_pts, 0.8)
-                cv2.imwrite(output_path + "/" + poly_uuid, poly_img)
-                x_data.append(poly_uuid)
+                if undersample_threshold and y_data.count(damage_label) >= undersample_threshold:
+                    continue
 
-    output_train_csv_path = os.path.join(output_csv_path, "train.csv")
-    output_test_csv_path = os.path.join(output_csv_path, "test.csv")
-    output_val_csv_path = os.path.join(output_csv_path, "val.csv")
+                try:
+                    polygon_geom = wkt.loads(feat['wkt'])
+                    if not isinstance(polygon_geom, Polygon):
+                        continue
+                    polygon_pts = np.array(polygon_geom.exterior.coords)
+                    poly_img = process_img(img_array, polygon_pts)
+                except Exception as e:
+                    logging.warning(f"Invalid polygon in {uid}: {e}")
+                    continue
 
-    if (TEST_SPLIT > 0):
-        x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=TEST_SPLIT, random_state=1)
-        if (VALIDATION_SPLIT > 0):
-            x_train, x_val, y_train, y_val = train_test_split(x_train, y_train, test_size=VALIDATION_SPLIT/(1-TEST_SPLIT), random_state=1)
-            save_labeled_data(x_val, y_val, output_val_csv_path)
+                out_filename = f"{uid}.png"
+                out_path = os.path.join(output_img_dir, out_filename)
 
-        save_labeled_data(x_test, y_test, output_test_csv_path)
-        save_labeled_data(x_train, y_train, output_train_csv_path)
+                try:
+                    cv2.imwrite(out_path, poly_img)
+                    x_data.append(out_filename)
+                    y_data.append(damage_label)
+                except Exception as e:
+                    logging.warning(f"Failed to save image {uid}: {e}")
+        except Exception as e:
+            logging.warning(f"Skipping image {img_path}: {e}")
 
-    elif (VALIDATION_SPLIT > 0):
-        x_train, x_val, y_train, y_val = train_test_split(x_data, y_data, test_size=VALIDATION_SPLIT/(1-TEST_SPLIT), random_state=1)
-        save_labeled_data(x_val, y_val, output_val_csv_path)
-        save_labeled_data(x_train, y_train, output_train_csv_path)
-        
+    # Handle dataset splits
+    train_csv = os.path.join(output_csv_dir, "train.csv")
+    val_csv = os.path.join(output_csv_dir, "val.csv")
+    test_csv = os.path.join(output_csv_dir, "test.csv")
+
+    if test_split > 0:
+        x_train, x_test, y_train, y_test = train_test_split(
+            x_data, y_data, test_size=test_split, random_state=42
+        )
+        save_labeled_data(x_test, y_test, test_csv)
     else:
-        save_labeled_data(x_data, y_data, output_train_csv_path)
-    
+        x_train, y_train = x_data, y_data
+
+    if val_split > 0:
+        x_train, x_val, y_train, y_val = train_test_split(
+            x_train, y_train, test_size=val_split / (1 - test_split), random_state=42
+        )
+        save_labeled_data(x_val, y_val, val_csv)
+
+    save_labeled_data(x_train, y_train, train_csv)
+
 
 def main():
+    parser = argparse.ArgumentParser(description="Process xBD dataset into cropped building images and CSV labels.")
+    parser.add_argument('--input_dir', required=True, help='Path to the root xBD dataset directory')
+    parser.add_argument('--output_dir', required=True, help='Directory to save cropped building images')
+    parser.add_argument('--output_csv_dir', required=True, help='Directory to save label CSVs')
+    parser.add_argument('--undersample_threshold', type=int, default=0, help='Max samples per class (0 = no limit)')
+    parser.add_argument('--val_split', type=float, default=0.0, help='Validation split fraction (e.g., 0.1)')
+    parser.add_argument('--test_split', type=float, default=0.0, help='Test split fraction (e.g., 0.1)')
 
-    parser = argparse.ArgumentParser(description='Run Building Damage Classification Training & Evaluation')
-    parser.add_argument('--input_dir',
-                        required=True,
-                        metavar="/path/to/xBD_input",
-                        help="Full path to the parent dataset directory")
-    parser.add_argument('--output_dir',
-                        required=True,
-                        metavar='/path/to/xBD_output',
-                        help="Path to new directory to save images")
-    parser.add_argument('--output_dir_csv',
-                        required=True,
-                        metavar='/path/to/xBD_output_csv',
-                        help="Path to new directory to save csv")
     args = parser.parse_args()
 
-    logging.info("Started Processing for Data")
-    process_data(args.input_dir, args.output_dir, args.output_dir_csv)
-    logging.info("Finished Processing Data")
+    logging.info("Starting xBD image processing...")
+    process_data(
+        input_path=args.input_dir,
+        output_img_dir=args.output_dir,
+        output_csv_dir=args.output_csv_dir,
+        undersample_threshold=args.undersample_threshold,
+        val_split=args.val_split,
+        test_split=args.test_split
+    )
+    logging.info(" Processing complete.")
 
 
 if __name__ == '__main__':
     main()
+
+
+
