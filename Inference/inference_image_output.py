@@ -1,71 +1,109 @@
+
+
+
+
+
+"""
+generate_inference_mask
+
+Generates a grayscale mask image from an inference JSON file where each building polygon is filled
+according to its damage classification level.
+
+Author: Your Name
+Date: 2025-05-01
+"""
+
+import os
 import json
+import argparse
+import numpy as np
 from shapely import wkt
 from shapely.geometry import Polygon
-import numpy as np
 from cv2 import fillPoly, imwrite
+
 
 def open_json(json_file_path):
     """
-    Opens the inference JSON file and extracts the localized polygon data.
-    :param json_file_path: Path to open inference JSON file.
-    :returns: The JSON data dictionary of localized polygons and their classifications.
+    Loads the inference JSON file and extracts the polygon data.
+
+    Args:
+        json_file_path (str): Path to the inference JSON file.
+
+    Returns:
+        list: List of polygon features with WKT and subtype.
     """
-    with open(json_file_path) as jf:
+    with open(json_file_path, 'r') as jf:
         json_data = json.load(jf)
-        inference_data = json_data['features']['xy']
-        return inference_data
+        return json_data['features']['xy']
 
-def create_image(inference_data):
-    """
-    Creates an 8-bit grayscale image with polygons filled according to their classification.
-    :param inference_data: JSON data dictionary of localized polygons and classifications.
-    :returns: A NumPy array of the grayscale image.
-    """
-    damage_key = {'un-classified': 1, 'no-damage': 1, 'minor-damage': 2, 'major-damage': 3, 'destroyed': 4}
 
-    # Initialize an empty mask
-    mask_img = np.zeros((1024, 1024, 1), np.uint8)
+def create_image(inference_data, image_size=(1024, 1024)):
+    """
+    Creates a grayscale mask image with polygons filled by damage category.
+
+    Args:
+        inference_data (list): Parsed JSON features with 'subtype' and 'wkt'.
+        image_size (tuple): Shape of the output image (height, width).
+
+    Returns:
+        np.ndarray: Grayscale image mask with damage classifications.
+    """
+    damage_key = {
+        'un-classified': 1,
+        'no-damage': 1,
+        'minor-damage': 2,
+        'major-damage': 3,
+        'destroyed': 4
+    }
+
+    mask_img = np.zeros((image_size[0], image_size[1], 1), dtype=np.uint8)
 
     for poly in inference_data:
-        damage = poly['properties']['subtype']
-        coords = wkt.loads(poly['wkt'])  # Parse the polygon from WKT format
+        try:
+            damage = poly['properties']['subtype']
+            polygon = wkt.loads(poly['wkt'])
+            poly_np = np.array(polygon.exterior.coords, np.int32)
+            fillPoly(mask_img, [poly_np], damage_key.get(damage, 1))
+        except Exception as e:
+            print(f"Skipping polygon due to error: {e}")
+            continue
 
-        # Convert the polygon coordinates to a NumPy array
-        poly_np = np.array(coords.exterior.coords, np.int32)
-        
-        # Fill the polygon on the mask
-        fillPoly(mask_img, [poly_np], damage_key[damage])
-    
     return mask_img
 
-def save_image(polygons, output_path):
+
+def save_image(mask, output_path):
     """
-    Saves the filled polygon mask as an image.
-    :param polygons: NumPy array with filled polygons from create_image().
-    :param output_path: Path to save the final output image.
+    Saves the grayscale mask to the specified output path.
+
+    Args:
+        mask (np.ndarray): The image array.
+        output_path (str): Path to save the image.
     """
-    imwrite(output_path, polygons)
+    imwrite(output_path, mask)
+    print(f"Inference image saved at {output_path}")
+
 
 def create_inference_image(json_input_path, image_output_path):
     """
-    Generates the inference image from the JSON output.
-    :param json_input_path: Path to the final inference JSON file.
-    :param image_output_path: Path to save the final inference image.
+    Main function to generate and save the inference image from JSON.
+
+    Args:
+        json_input_path (str): Path to the inference results JSON file.
+        image_output_path (str): Path where the mask image will be saved.
     """
-    # Get the inference data from the JSON
     inference_data = open_json(json_input_path)
+    mask = create_image(inference_data)
+    save_image(mask, image_output_path)
 
-    # Create a mask with filled polygons
-    polygon_array = create_image(inference_data)
 
-    # Save the mask as an image
-    save_image(polygon_array, image_output_path)
+def main():
+    parser = argparse.ArgumentParser(description="Convert inference JSON to grayscale mask image.")
+    parser.add_argument('--json_input_path', required=True, help='Path to inference JSON file')
+    parser.add_argument('--image_output_path', required=True, help='Path to save grayscale mask image')
+
+    args = parser.parse_args()
+    create_inference_image(args.json_input_path, args.image_output_path)
+
 
 if __name__ == '__main__':
-    # Paths for your project
-    json_input_path = "/content/drive/MyDrive/Thesis/protonet_inference_output/inference_results.json"
-    image_output_path = "/content/drive/MyDrive/Thesis/protonet_inference_output/inference_image.png"
-
-    # Creating the inference image
-    create_inference_image(json_input_path, image_output_path)
-    print(f"Inference image saved at {image_output_path}")
+    main()
